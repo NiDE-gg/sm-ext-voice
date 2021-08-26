@@ -95,8 +95,8 @@ double g_fLastVoiceData[SM_MAXPLAYERS + 1];
 
 DETOUR_DECL_STATIC2(SV_BroadcastVoiceData_CSGO, void, IClient *, pClient, const CCLCMsg_VoiceData, &msg)
 {
-	if (g_Interface.OnBroadcastVoiceData(pClient, msg.nBytes, msg.data))
-		DETOUR_STATIC_CALL(SV_BroadcastVoiceData)(pClient, nBytes, data, xuid);
+	if (g_Interface.OnBroadcastVoiceData(pClient, msg.sequence_bytes, msg.data))
+		DETOUR_STATIC_CALL(SV_BroadcastVoiceData_CSGO)(pClient, msg);
 }
 
 DETOUR_DECL_STATIC4(SV_BroadcastVoiceData, void, IClient *, pClient, int, nBytes, char *, data, int64, xuid)
@@ -253,14 +253,12 @@ bool CVoice::SDK_OnLoad(char *error, size_t maxlength, bool late)
 	}
 	dlclose(pEngineSo);
 
-	if (engineVersion == SOURCE_ENGINE_CSGO)
-	{
+#if SOURCE_ENGINE == SE_CSGO
 		m_SV_BroadcastVoiceData = (t_SV_BroadcastVoiceData_CSGO)adrVoiceData;
-	}
-	else
-	{
+#else
 		m_SV_BroadcastVoiceData = (t_SV_BroadcastVoiceData)adrVoiceData;
-	}
+#endif
+
 	if(!m_SV_BroadcastVoiceData)
 	{
 		g_SMAPI->Format(error, maxlength, "SV_BroadcastVoiceData sigscan failed.");

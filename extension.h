@@ -56,8 +56,8 @@ typedef void (*t_SV_BroadcastVoiceData)(IClient *, int, unsigned char *, int64);
 
 enum VoiceDataFormat_t
 {
-	VOICEDATA_FORMAT_STEAM = 0; // steam uses SILK
-	VOICEDATA_FORMAT_ENGINE = 1; // was speex, switching to celt
+	VOICEDATA_FORMAT_STEAM = 0, // steam uses SILK
+	VOICEDATA_FORMAT_ENGINE = 1 // was speex, switching to celt
 };
 
 struct CCLCMsg_VoiceData
@@ -68,7 +68,7 @@ struct CCLCMsg_VoiceData
 	int32_t sequence_bytes; // This is a TCP-style sequence number, so it includes the current packet length.  So it's actually the offset within the compressed data stream of the next packet to follow (if any).
 	uint32_t section_number;
 	uint32_t uncompressed_sample_offset;
-}
+};
 typedef void (*t_SV_BroadcastVoiceData_CSGO)(IClient * cl, const CCLCMsg_VoiceData& msg );
 
 /**
@@ -192,7 +192,11 @@ private:
 	CELTMode *m_pMode;
 	CELTEncoder *m_pCodec;
 
+#if SOURCE_ENGINE == SE_CSGO
+	t_SV_BroadcastVoiceData_CSGO m_SV_BroadcastVoiceData;
+#else
 	t_SV_BroadcastVoiceData m_SV_BroadcastVoiceData;
+#endif
 	CDetour *m_VoiceDetour;
 
 	void HandleNetwork();
