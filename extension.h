@@ -54,6 +54,23 @@ class CDetour;
 class IClient;
 typedef void (*t_SV_BroadcastVoiceData)(IClient *, int, unsigned char *, int64);
 
+enum VoiceDataFormat_t
+{
+	VOICEDATA_FORMAT_STEAM = 0; // steam uses SILK
+	VOICEDATA_FORMAT_ENGINE = 1; // was speex, switching to celt
+};
+
+struct CCLCMsg_VoiceData
+{
+	char *data;
+	uint64_t xuid;
+	VoiceDataFormat_t format = VOICEDATA_FORMAT_ENGINE;
+	int32_t sequence_bytes; // This is a TCP-style sequence number, so it includes the current packet length.  So it's actually the offset within the compressed data stream of the next packet to follow (if any).
+	uint32_t section_number;
+	uint32_t uncompressed_sample_offset;
+}
+typedef void (*t_SV_BroadcastVoiceData_CSGO)(IClient * cl, const CCLCMsg_VoiceData& msg );
+
 /**
  * @brief Sample implementation of the SDK Extension.
  * Note: Uncomment one of the pre-defined virtual functions in order to use it.

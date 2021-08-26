@@ -38,6 +38,7 @@ CSGO = {
 
 PossibleSDKs = {
   'css':  SDK('HL2SDKCSS', '2.css', '6', 'CSS', WinLinuxMac, 'css'),
+  'csgo': SDK('HL2SDKCSGO', '2.csgo', '21', 'CSGO', WinLinuxMac, 'csgo'),
 }
 
 def ResolveEnvPath(env, folder):

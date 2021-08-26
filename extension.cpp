@@ -43,6 +43,8 @@
 #include <iserver.h>
 #include <ISDKTools.h>
 
+#include <ITimerSystem.h>
+
 #include <ihltvdirector.h>
 #include <ihltv.h>
 
@@ -72,6 +74,15 @@ template <typename T> inline T min(T a, T b) { return a<b?a:b; }
 CVoice g_Interface;
 SMEXT_LINK(&g_Interface);
 
+IForward *g_pSpeakingForward = NULL;
+IForward *g_pStartSpeakingForward = NULL;
+IForward *g_pEndSpeakingForward = NULL;
+
+ITimer *g_pTimerSpeaking[MAX_CLIENTS];
+
+// CDetour *g_Detour_OnVoiceTransmit = NULL;
+// CDetour *g_Detour_CGameClient__ProcessVoiceData = NULL;
+
 CGlobalVars *gpGlobals = NULL;
 ISDKTools *g_pSDKTools = NULL;
 IServer *iserver = NULL;
@@ -81,6 +92,12 @@ IHLTVServer *hltv = NULL;
 
 int g_aFrameVoiceBytes[SM_MAXPLAYERS + 1];
 double g_fLastVoiceData[SM_MAXPLAYERS + 1];
+
+DETOUR_DECL_STATIC2(SV_BroadcastVoiceData_CSGO, void, IClient *, pClient, const CCLCMsg_VoiceData, &msg)
+{
+	if (g_Interface.OnBroadcastVoiceData(pClient, msg.nBytes, msg.data))
+		DETOUR_STATIC_CALL(SV_BroadcastVoiceData)(pClient, nBytes, data, xuid);
+}
 
 DETOUR_DECL_STATIC4(SV_BroadcastVoiceData, void, IClient *, pClient, int, nBytes, char *, data, int64, xuid)
 {
@@ -141,6 +158,27 @@ CVoice::CVoice()
 	m_SV_BroadcastVoiceData = NULL;
 }
 
+class SpeakingEndTimer : public ITimedEvent
+{
+public:
+	ResultType OnTimer(ITimer *pTimer, void *pData)
+	{
+		int client = (int)(intptr_t)pData;
+		if ((gpGlobals->curtime - g_fLastVoiceData[client]) > 0.1)
+		{
+			g_pEndSpeakingForward->PushCell(client);
+			g_pEndSpeakingForward->Execute();
+
+			return Pl_Stop;
+		}
+		return Pl_Continue;
+	}
+	void OnTimerEnd(ITimer *pTimer, void *pData)
+	{
+		g_pTimerSpeaking[(int)(intptr_t)pData] = NULL;
+	}
+} s_SpeakingEndTimer;
+
 bool CVoice::SDK_OnLoad(char *error, size_t maxlength, bool late)
 {
 	// Setup engine-specific data.
@@ -166,9 +204,9 @@ bool CVoice::SDK_OnLoad(char *error, size_t maxlength, bool late)
 	{
 		case SOURCE_ENGINE_CSGO:
 #ifdef _WIN32
-			adrVoiceData = memutils->FindPattern(pEngineSo, "\x55\x8B\xEC\x81\xEC\xD0\x00\x00\x00\x53\x56\x57", 12);
+			adrVoiceData = memutils->FindPattern(pEngineSo, "\x2A\x2A\x2A\x2A\x2A\x2A\x2A\x2A\xE4\x00\x00\x00\x53\x56\x57\x8B\xD9\x8B\xF2", 19);
 #else
-			adrVoiceData = memutils->ResolveSymbol(pEngineSo, "_Z21SV_BroadcastVoiceDataP7IClientiPcx");
+			adrVoiceData = memutils->FindPattern(pEngineSo, "\x55\x89\xE5\x57\x56\x8D\x55\xDC", 8);
 #endif
 			break;
 
@@ -215,7 +253,14 @@ bool CVoice::SDK_OnLoad(char *error, size_t maxlength, bool late)
 	}
 	dlclose(pEngineSo);
 
-	m_SV_BroadcastVoiceData = (t_SV_BroadcastVoiceData)adrVoiceData;
+	if (engineVersion == SOURCE_ENGINE_CSGO)
+	{
+		m_SV_BroadcastVoiceData = (t_SV_BroadcastVoiceData_CSGO)adrVoiceData;
+	}
+	else
+	{
+		m_SV_BroadcastVoiceData = (t_SV_BroadcastVoiceData)adrVoiceData;
+	}
 	if(!m_SV_BroadcastVoiceData)
 	{
 		g_SMAPI->Format(error, maxlength, "SV_BroadcastVoiceData sigscan failed.");
@@ -235,7 +280,14 @@ bool CVoice::SDK_OnLoad(char *error, size_t maxlength, bool late)
 		m_VoiceDetour = DETOUR_CREATE_STATIC(SV_BroadcastVoiceData, adrVoiceData);
 	}
 #else
-	m_VoiceDetour = DETOUR_CREATE_STATIC(SV_BroadcastVoiceData, adrVoiceData);
+	if (engineVersion == SOURCE_ENGINE_CSGO || engineVersion == SOURCE_ENGINE_INSURGENCY)
+	{
+		m_VoiceDetour = DETOUR_CREATE_STATIC(SV_BroadcastVoiceData_CSGO, adrVoiceData);
+	}
+	else
+	{
+		m_VoiceDetour = DETOUR_CREATE_STATIC(SV_BroadcastVoiceData, adrVoiceData);
+	}
 #endif
 
 	if (!m_VoiceDetour)
@@ -245,6 +297,28 @@ bool CVoice::SDK_OnLoad(char *error, size_t maxlength, bool late)
 	}
 
 	m_VoiceDetour->EnableDetour();
+
+	g_pSpeakingForward = g_pForwards->CreateForward("OnClientSpeaking", ET_Event, 1, NULL, Param_Cell);
+	g_pStartSpeakingForward = g_pForwards->CreateForward("OnClientSpeakingStart", ET_Event, 1, NULL, Param_Cell);
+	g_pEndSpeakingForward = g_pForwards->CreateForward("OnClientSpeakingEnd", ET_Event, 1, NULL, Param_Cell);
+
+// #if SOURCE_ENGINE == SE_CSGO || SOURCE_ENGINE == SE_LEFT4DEAD || SOURCE_ENGINE == SE_LEFT4DEAD2 || SOURCE_ENGINE == SE_INSURGENCY
+// 	g_Detour_OnVoiceTransmit = DETOUR_CREATE_MEMBER(OnVoiceTransmit, "OnVoiceTransmit");
+// 	if(!g_Detour_OnVoiceTransmit)
+// 	{
+// 		snprintf(error, maxlen, "Failed to detour OnVoiceTransmit.\n");
+// 		return false;
+// 	}
+// 	g_Detour_OnVoiceTransmit->EnableDetour();
+// #else
+// 	g_Detour_CGameClient__ProcessVoiceData = DETOUR_CREATE_MEMBER(CGameClient__ProcessVoiceData, "CGameClient__ProcessVoiceData");
+// 	if(!g_Detour_CGameClient__ProcessVoiceData)
+// 	{
+// 		snprintf(error, maxlen, "Failed to detour CGameClient__ProcessVoiceData.\n");
+// 		return false;
+// 	}
+// 	g_Detour_CGameClient__ProcessVoiceData->EnableDetour();
+// #endif
 
 	// Encoder settings
 	m_EncoderSettings.SampleRate_Hz = 22050;
@@ -415,6 +489,22 @@ void CVoice::SDK_OnUnload()
 		m_VoiceDetour = NULL;
 	}
 
+	g_pForwards->ReleaseForward(g_pSpeakingForward);
+	g_pForwards->ReleaseForward(g_pStartSpeakingForward);
+	g_pForwards->ReleaseForward(g_pEndSpeakingForward);
+
+	// if(g_Detour_OnVoiceTransmit)
+	// {
+	// 	g_Detour_OnVoiceTransmit->Destroy();
+	// 	g_Detour_OnVoiceTransmit = NULL;
+	// }
+
+	// if(g_Detour_CGameClient__ProcessVoiceData)
+	// {
+	// 	g_Detour_CGameClient__ProcessVoiceData->Destroy();
+	// 	g_Detour_CGameClient__ProcessVoiceData = NULL;
+	// }
+
 	if(m_ListenSocket != -1)
 	{
 		close(m_ListenSocket);
@@ -462,6 +552,14 @@ bool CVoice::OnBroadcastVoiceData(IClient *pClient, int nBytes, char *data)
 		return false;
 
 	g_fLastVoiceData[client] = gpGlobals->curtime;
+
+	if (g_pTimerSpeaking[client] == NULL)
+	{
+		g_pTimerSpeaking[client] = timersys->CreateTimer(&s_SpeakingEndTimer, 0.3f, (void *)(intptr_t)client, 1);
+
+		g_pStartSpeakingForward->PushCell(client);
+		g_pStartSpeakingForward->Execute();
+	}
 
 	return true;
 }
@@ -671,7 +769,13 @@ void CVoice::HandleVoiceData()
 
 	// Get SourceTV Index
 	if (!hltv)
+	{
+#if SOURCE_ENGINE >= SE_CSGO
+		hltv = hltvdirector->GetHLTVServer(0);
+#else
 		hltv = hltvdirector->GetHLTVServer();
+#endif
+	}
 
 	int iSourceTVIndex = 0;
 	if (hltv)
