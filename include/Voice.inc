@@ -15,7 +15,7 @@
  *
  */
 
-native bool IsClientSpeaking(int client);
+native bool IsClientTalking(int client);
 
 /**
  *
