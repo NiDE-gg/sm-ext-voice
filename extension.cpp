@@ -537,7 +537,9 @@ void CVoice::HandleNetwork()
 		// Make sure to set SO_LINGER l_onoff = 1, l_linger = 0
 		if(m_aPollFds[PollFds].revents & POLLHUP)
 		{
-			close(pClient->m_Socket);
+			if (pClient->m_Socket != -1)
+				close(pClient->m_Socket);
+
 			pClient->m_Socket = -1;
 			m_aPollFds[PollFds].fd = -1;
 			CompressPollFds = true;
@@ -580,7 +582,9 @@ void CVoice::HandleNetwork()
 
 		if(Bytes <= 0)
 		{
-			close(pClient->m_Socket);
+			if (pClient->m_Socket != -1)
+				close(pClient->m_Socket);
+
 			pClient->m_Socket = -1;
 			m_aPollFds[PollFds].fd = -1;
 			CompressPollFds = true;
