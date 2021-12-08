@@ -55,7 +55,8 @@
 // voice packets are sent over unreliable netchannel
 //#define NET_MAX_DATAGRAM_PAYLOAD	4000	// = maximum unreliable payload size
 // voice packetsize = 64 | netchannel overflows at >4000 bytes
-// with 22050 samplerate and 512 frames per packet -> 23.22ms per packet
+// 2009 Games with 22050 samplerate and 512 frames per packet -> 23.22ms per packet
+// Newer games with 44100 samplerate and 512 frames per packet -> 23.22ms per packet
 // SVC_VoiceData overhead = 5 bytes
 // sensible limit of 8 packets per frame = 552 bytes -> 185.76ms of voice data per frame
 #define NET_MAX_VOICE_BYTES_FRAME (8 * (5 + 64))
@@ -93,10 +94,22 @@ IHLTVServer *hltv = NULL;
 int g_aFrameVoiceBytes[SM_MAXPLAYERS + 1];
 double g_fLastVoiceData[SM_MAXPLAYERS + 1];
 
-DETOUR_DECL_STATIC2(SV_BroadcastVoiceData_CSGO, void, IClient *, pClient, const CCLCMsg_VoiceData, &msg)
+IGameConfig *g_pGameConf = NULL;
+
+DETOUR_DECL_STATIC3(SV_BroadcastVoiceData_CSGO, int, IClient *, pClient, const CCLCMsg_VoiceData &, msg, char, paramrelatedtohltv)
 {
-	if (g_Interface.OnBroadcastVoiceData(pClient, msg.sequence_bytes, msg.data))
-		DETOUR_STATIC_CALL(SV_BroadcastVoiceData_CSGO)(pClient, msg);
+	if (g_SvLogging->GetInt())
+	{
+		int client = pClient->GetPlayerSlot() + 1;
+		g_pSM->LogMessage(myself, "Player SV_BroadcastVoiceData_CSGO (client=%d)", client);
+	}
+
+	if (g_Interface.OnBroadcastVoiceData(pClient, strlen(msg.data), msg.data))
+		return DETOUR_STATIC_CALL(SV_BroadcastVoiceData_CSGO)(pClient, msg, paramrelatedtohltv);
+
+	// Return CSVCMsg_VoiceData::~CSVCMsg_VoiceData((CSVCMsg_VoiceData *)v48); but return value not used in
+	// bool CGameClient::CLCMsg_VoiceData( const CCLCMsg_VoiceData& msg ) so wtf ???
+	return 1;
 }
 
 DETOUR_DECL_STATIC4(SV_BroadcastVoiceData, void, IClient *, pClient, int, nBytes, char *, data, int64, xuid)
@@ -169,6 +182,9 @@ public:
 			g_pEndSpeakingForward->PushCell(client);
 			g_pEndSpeakingForward->Execute();
 
+			if (g_SvLogging->GetInt())
+				g_pSM->LogMessage(myself, "Player Speaking End (client=%d)", client);
+
 			return Pl_Stop;
 		}
 		return Pl_Continue;
@@ -181,111 +197,31 @@ public:
 
 bool CVoice::SDK_OnLoad(char *error, size_t maxlength, bool late)
 {
-	// Setup engine-specific data.
-	Dl_info info;
-	void *engineFactory = (void *)g_SMAPI->GetEngineFactory(false);
-	if(dladdr(engineFactory, &info) == 0)
+	char conf_error[255] = "";
+	if(!gameconfs->LoadGameConfigFile("voice.games", &g_pGameConf, conf_error, sizeof(conf_error)))
 	{
-		g_SMAPI->Format(error, maxlength, "dladdr(engineFactory) failed.");
-		return false;
-	}
-
-	void *pEngineSo = dlopen(info.dli_fname, RTLD_NOW);
-	if(pEngineSo == NULL)
-	{
-		g_SMAPI->Format(error, maxlength, "dlopen(%s) failed.", info.dli_fname);
-		return false;
-	}
-
-	int engineVersion = g_SMAPI->GetSourceEngineBuild();
-	void *adrVoiceData = NULL;
-
-	switch (engineVersion)
-	{
-		case SOURCE_ENGINE_CSGO:
-#ifdef _WIN32
-			adrVoiceData = memutils->FindPattern(pEngineSo, "\x2A\x2A\x2A\x2A\x2A\x2A\x2A\x2A\xE4\x00\x00\x00\x53\x56\x57\x8B\xD9\x8B\xF2", 19);
-#else
-			adrVoiceData = memutils->FindPattern(pEngineSo, "\x55\x89\xE5\x57\x56\x8D\x55\xDC", 8);
-#endif
-			break;
-
-		case SOURCE_ENGINE_LEFT4DEAD2:
-#ifdef _WIN32
-			adrVoiceData = memutils->FindPattern(pEngineSo, "\x55\x8B\xEC\x83\xEC\x70\xA1\x2A\x2A\x2A\x2A\x33\xC5\x89\x45\xFC\xA1\x2A\x2A\x2A\x2A\x53\x56", 23);
-#else
-			adrVoiceData = memutils->ResolveSymbol(pEngineSo, "_Z21SV_BroadcastVoiceDataP7IClientiPcx");
-#endif
-			break;
-
-		case SOURCE_ENGINE_NUCLEARDAWN:
-#ifdef _WIN32
-			adrVoiceData = memutils->FindPattern(pEngineSo, "\x55\x8B\xEC\xA1\x2A\x2A\x2A\x2A\x83\xEC\x58\x57\x33\xFF", 14);
-#else
-			adrVoiceData = memutils->ResolveSymbol(pEngineSo, "_Z21SV_BroadcastVoiceDataP7IClientiPcx");
-#endif
-			break;
-
-		case SOURCE_ENGINE_INSURGENCY:
-#ifdef _WIN32
-			adrVoiceData = memutils->FindPattern(pEngineSo, "\x55\x8B\xEC\x83\xEC\x74\x68\x2A\x2A\x2A\x2A\x8D\x4D\xE4\xE8", 15);
-#else
-			adrVoiceData = memutils->ResolveSymbol(pEngineSo, "_Z21SV_BroadcastVoiceDataP7IClientiPcx");
-#endif
-			break;
-
-		case SOURCE_ENGINE_TF2:
-		case SOURCE_ENGINE_CSS:
-		case SOURCE_ENGINE_HL2DM:
-		case SOURCE_ENGINE_DODS:
-		case SOURCE_ENGINE_SDK2013:
-#ifdef _WIN32
-			adrVoiceData = memutils->FindPattern(pEngineSo, "\x55\x8B\xEC\xA1\x2A\x2A\x2A\x2A\x83\xEC\x50\x83\x78\x30", 14);
-#else
-			adrVoiceData = memutils->ResolveSymbol(pEngineSo, "_Z21SV_BroadcastVoiceDataP7IClientiPcx");
-#endif
-			break;
-
-		default:
-			g_SMAPI->Format(error, maxlength, "Unsupported game.");
-			dlclose(pEngineSo);
-			return false;
-	}
-	dlclose(pEngineSo);
-
-#if SOURCE_ENGINE == SE_CSGO
-		m_SV_BroadcastVoiceData = (t_SV_BroadcastVoiceData_CSGO)adrVoiceData;
-#else
-		m_SV_BroadcastVoiceData = (t_SV_BroadcastVoiceData)adrVoiceData;
-#endif
-
-	if(!m_SV_BroadcastVoiceData)
-	{
-		g_SMAPI->Format(error, maxlength, "SV_BroadcastVoiceData sigscan failed.");
+		if(conf_error[0])
+		{
+			snprintf(error, maxlength, "Could not read voice.games.txt: %s\n", conf_error);
+		}
 		return false;
 	}
 
 	// Setup voice detour.
-	CDetourManager::Init(g_pSM->GetScriptingEngine(), NULL);
+	CDetourManager::Init(g_pSM->GetScriptingEngine(), g_pGameConf);
 
-#ifdef _WIN32
-	if (engineVersion == SOURCE_ENGINE_CSGO || engineVersion == SOURCE_ENGINE_INSURGENCY)
-	{
-		m_VoiceDetour = DETOUR_CREATE_STATIC(SV_BroadcastVoiceData_LTCG, adrVoiceData);
-	}
-	else
-	{
-		m_VoiceDetour = DETOUR_CREATE_STATIC(SV_BroadcastVoiceData, adrVoiceData);
-	}
+#if SOURCE_ENGINE == SE_CSGO || SOURCE_ENGINE == SE_INSURGENCY
+	#ifdef _WIN32
+		m_VoiceDetour = DETOUR_CREATE_STATIC(SV_BroadcastVoiceData_LTCG, "SV_BroadcastVoiceData");
+	#else
+		m_VoiceDetour = DETOUR_CREATE_STATIC(SV_BroadcastVoiceData_CSGO, "SV_BroadcastVoiceData");
+	#endif
 #else
-	if (engineVersion == SOURCE_ENGINE_CSGO || engineVersion == SOURCE_ENGINE_INSURGENCY)
-	{
-		m_VoiceDetour = DETOUR_CREATE_STATIC(SV_BroadcastVoiceData_CSGO, adrVoiceData);
-	}
-	else
-	{
-		m_VoiceDetour = DETOUR_CREATE_STATIC(SV_BroadcastVoiceData, adrVoiceData);
-	}
+	#ifdef _WIN32
+		m_VoiceDetour = DETOUR_CREATE_STATIC(SV_BroadcastVoiceData, "SV_BroadcastVoiceData");
+	#else
+		m_VoiceDetour = DETOUR_CREATE_STATIC(SV_BroadcastVoiceData, "SV_BroadcastVoiceData");
+	#endif
 #endif
 
 	if (!m_VoiceDetour)
@@ -300,26 +236,12 @@ bool CVoice::SDK_OnLoad(char *error, size_t maxlength, bool late)
 	g_pStartSpeakingForward = g_pForwards->CreateForward("OnClientSpeakingStart", ET_Event, 1, NULL, Param_Cell);
 	g_pEndSpeakingForward = g_pForwards->CreateForward("OnClientSpeakingEnd", ET_Event, 1, NULL, Param_Cell);
 
-// #if SOURCE_ENGINE == SE_CSGO || SOURCE_ENGINE == SE_LEFT4DEAD || SOURCE_ENGINE == SE_LEFT4DEAD2 || SOURCE_ENGINE == SE_INSURGENCY
-// 	g_Detour_OnVoiceTransmit = DETOUR_CREATE_MEMBER(OnVoiceTransmit, "OnVoiceTransmit");
-// 	if(!g_Detour_OnVoiceTransmit)
-// 	{
-// 		snprintf(error, maxlen, "Failed to detour OnVoiceTransmit.\n");
-// 		return false;
-// 	}
-// 	g_Detour_OnVoiceTransmit->EnableDetour();
-// #else
-// 	g_Detour_CGameClient__ProcessVoiceData = DETOUR_CREATE_MEMBER(CGameClient__ProcessVoiceData, "CGameClient__ProcessVoiceData");
-// 	if(!g_Detour_CGameClient__ProcessVoiceData)
-// 	{
-// 		snprintf(error, maxlen, "Failed to detour CGameClient__ProcessVoiceData.\n");
-// 		return false;
-// 	}
-// 	g_Detour_CGameClient__ProcessVoiceData->EnableDetour();
-// #endif
-
 	// Encoder settings
+#if SOURCE_ENGINE == SE_CSGO || SOURCE_ENGINE == SE_INSURGENCY
+	m_EncoderSettings.SampleRate_Hz = 44100;
+#else
 	m_EncoderSettings.SampleRate_Hz = 22050;
+#endif
 	m_EncoderSettings.TargetBitRate_Kbps = 64;
 	m_EncoderSettings.FrameSize = 512; // samples
 	m_EncoderSettings.PacketSize = 64;
@@ -491,18 +413,6 @@ void CVoice::SDK_OnUnload()
 	g_pForwards->ReleaseForward(g_pStartSpeakingForward);
 	g_pForwards->ReleaseForward(g_pEndSpeakingForward);
 
-	// if(g_Detour_OnVoiceTransmit)
-	// {
-	// 	g_Detour_OnVoiceTransmit->Destroy();
-	// 	g_Detour_OnVoiceTransmit = NULL;
-	// }
-
-	// if(g_Detour_CGameClient__ProcessVoiceData)
-	// {
-	// 	g_Detour_CGameClient__ProcessVoiceData->Destroy();
-	// 	g_Detour_CGameClient__ProcessVoiceData = NULL;
-	// }
-
 	if(m_ListenSocket != -1)
 	{
 		close(m_ListenSocket);
@@ -557,6 +467,9 @@ bool CVoice::OnBroadcastVoiceData(IClient *pClient, int nBytes, char *data)
 
 		g_pStartSpeakingForward->PushCell(client);
 		g_pStartSpeakingForward->Execute();
+
+		if (g_SvLogging->GetInt())
+			g_pSM->LogMessage(myself, "Player Speaking Start (client=%d)", client);
 	}
 
 	return true;

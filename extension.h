@@ -69,7 +69,7 @@ struct CCLCMsg_VoiceData
 	uint32_t section_number;
 	uint32_t uncompressed_sample_offset;
 };
-typedef void (*t_SV_BroadcastVoiceData_CSGO)(IClient * cl, const CCLCMsg_VoiceData& msg );
+typedef int (*t_SV_BroadcastVoiceData_CSGO)(IClient *, const CCLCMsg_VoiceData &, char);
 
 /**
  * @brief Sample implementation of the SDK Extension.
