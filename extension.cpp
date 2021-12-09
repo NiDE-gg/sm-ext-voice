@@ -56,9 +56,10 @@
 //#define NET_MAX_DATAGRAM_PAYLOAD	4000	// = maximum unreliable payload size
 // voice packetsize = 64 | netchannel overflows at >4000 bytes
 // 2009 Games with 22050 samplerate and 512 frames per packet -> 23.22ms per packet
-// Newer games with 44100 samplerate and 512 frames per packet -> 23.22ms per packet
-// SVC_VoiceData overhead = 5 bytes
-// sensible limit of 8 packets per frame = 552 bytes -> 185.76ms of voice data per frame
+// Newer games with 44100 samplerate and 512 frames per packet -> 11.60ms per packet
+// 2009 Games SVC_VoiceData overhead = 5 bytes
+// 2009 Games sensible limit of 8 packets per frame = 552 bytes -> 185.76ms of voice data per frame
+// Newer games sensible limit of 8 packets per frame = 552 bytes -> 82.80ms of voice data per frame
 #define NET_MAX_VOICE_BYTES_FRAME (8 * (5 + 64))
 
 ConVar *g_SmVoiceAddr = CreateConVar("sm_voice_addr", "127.0.0.1", FCVAR_PROTECTED, "Voice server listen ip address.");
@@ -101,10 +102,10 @@ DETOUR_DECL_STATIC3(SV_BroadcastVoiceData_CSGO, int, IClient *, pClient, const C
 	if (g_SvLogging->GetInt())
 	{
 		int client = pClient->GetPlayerSlot() + 1;
-		g_pSM->LogMessage(myself, "Player SV_BroadcastVoiceData_CSGO (client=%d)", client);
+		// g_pSM->LogMessage(myself, "Player SV_BroadcastVoiceData_CSGO (client=%d, paramrelatedtohltv=%d, xuid=%d, data=%s, format=%d, sequence_bytes=%" PRId32 ", section_number=%d, uncompressed_sample_offset=%d)", client, paramrelatedtohltv, msg.xuid, msg.data, static_cast<int>(msg.format), msg.sequence_bytes, msg.section_number, msg.uncompressed_sample_offset);
 	}
 
-	if (g_Interface.OnBroadcastVoiceData(pClient, strlen(msg.data), msg.data))
+	if (g_Interface.OnBroadcastVoiceData(pClient, msg.data().size(), (char *)msg.data().c_str()))
 		return DETOUR_STATIC_CALL(SV_BroadcastVoiceData_CSGO)(pClient, msg, paramrelatedtohltv);
 
 	// Return CSVCMsg_VoiceData::~CSVCMsg_VoiceData((CSVCMsg_VoiceData *)v48); but return value not used in
@@ -168,7 +169,6 @@ CVoice::CVoice()
 	m_pCodec = NULL;
 
 	m_VoiceDetour = NULL;
-	m_SV_BroadcastVoiceData = NULL;
 }
 
 class SpeakingEndTimer : public ITimedEvent
@@ -758,12 +758,31 @@ void CVoice::HandleVoiceData()
 
 void CVoice::BroadcastVoiceData(IClient *pClient, int nBytes, unsigned char *pData)
 {
+#if SOURCE_ENGINE == SE_CSGO || SOURCE_ENGINE == SE_INSURGENCY
 	#ifdef _WIN32
-	__asm mov ecx, pClient;
-	__asm mov edx, nBytes;
+		__asm mov ecx, pClient;
+		__asm mov edx, nBytes;
 
-	DETOUR_STATIC_CALL(SV_BroadcastVoiceData_LTCG)((char *)pData, 0);
+		DETOUR_STATIC_CALL(SV_BroadcastVoiceData_LTCG)((char *)pData, 0);
 	#else
-	DETOUR_STATIC_CALL(SV_BroadcastVoiceData)(pClient, nBytes, (char *)pData, 0);
+		char paramrelatedtohltv = 1; // IDK what this does
+		CCLCMsg_VoiceData msg;
+		msg.set_xuid(0);
+		msg.set_data((char *)pData);
+		msg.set_format(VOICEDATA_FORMAT_ENGINE);
+		msg.set_sequence_bytes(nBytes);
+		msg.set_section_number(0);
+		msg.set_uncompressed_sample_offset(0);
+		DETOUR_STATIC_CALL(SV_BroadcastVoiceData_CSGO)(pClient, msg, paramrelatedtohltv);
 	#endif
+#else
+	#ifdef _WIN32
+		__asm mov ecx, pClient;
+		__asm mov edx, nBytes;
+
+		DETOUR_STATIC_CALL(SV_BroadcastVoiceData_LTCG)((char *)pData, 0);
+	#else
+		DETOUR_STATIC_CALL(SV_BroadcastVoiceData)(pClient, nBytes, (char *)pData, 0);
+	#endif
+#endif
 }

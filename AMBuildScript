@@ -453,6 +453,7 @@ class ExtensionConfig(object):
       os.path.join(self.sm_root, 'public', 'amtl', 'amtl'),
       os.path.join(self.sm_root, 'public', 'amtl'),
       os.path.join(self.sm_root, 'extensions', 'sm-ext-common', 'include'),
+      os.path.join(context.currentSourcePath, 'protobuf_compiled', 'include'),
     ]
     return compiler
 

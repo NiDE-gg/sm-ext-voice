@@ -27,7 +27,13 @@ for cxx in builder.targets:
     elif cxx.family == 'msvc':
       cxx.cxxflags += ['/GR-']
 
+    binary.compiler.postlink += [
+      os.path.join(builder.sourcePath, 'protobuf_compiled', 'lib', 'libprotobuf.a'),
+      os.path.join(builder.sourcePath, 'protobuf_compiled', 'lib', 'libprotoc.a'),
+    ]
+
     binary.sources += [
+      'netmessages.pb.cc',
       'extension.cpp',
       'ringbuffer.cpp',
       os.path.join(SM.sm_root, 'extensions', 'sm-ext-common', 'mathstubs.c'),
