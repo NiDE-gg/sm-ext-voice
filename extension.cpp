@@ -97,16 +97,30 @@ double g_fLastVoiceData[SM_MAXPLAYERS + 1];
 
 IGameConfig *g_pGameConf = NULL;
 
-DETOUR_DECL_STATIC3(SV_BroadcastVoiceData_CSGO, int, IClient *, pClient, const CCLCMsg_VoiceData &, msg, char, paramrelatedtohltv)
+DETOUR_DECL_STATIC3(SV_BroadcastVoiceData_CSGO, int, IClient *, pClient, const CCLCMsg_VoiceData &, msg, bool, paramrelatedtohltv)
 {
 	if (g_SvLogging->GetInt())
 	{
-		int client = pClient->GetPlayerSlot() + 1;
-		// g_pSM->LogMessage(myself, "Player SV_BroadcastVoiceData_CSGO (client=%d, paramrelatedtohltv=%d, xuid=%d, data=%s, format=%d, sequence_bytes=%" PRId32 ", section_number=%d, uncompressed_sample_offset=%d)", client, paramrelatedtohltv, msg.xuid, msg.data, static_cast<int>(msg.format), msg.sequence_bytes, msg.section_number, msg.uncompressed_sample_offset);
+		g_pSM->LogMessage(myself, "=============SV_BroadcastVoiceData_CSGO================");
+		g_pSM->LogMessage(myself, "client %d", pClient->GetPlayerSlot() + 1);
+		g_pSM->LogMessage(myself, "paramrelatedtohltv %d", paramrelatedtohltv);
+
+		if (msg.xuid())
+			g_pSM->LogMessage(myself, "Msg XUID: %" PRId64, msg.xuid());
+
+		g_pSM->LogMessage(myself, "Msg Format: %d", msg.format());
+		g_pSM->LogMessage(myself, "Msg sequence_bytes %d", msg.sequence_bytes());
+		g_pSM->LogMessage(myself, "Msg Data: %s", (char *)msg.data().c_str());
+		g_pSM->LogMessage(myself, "Msg section_number %d", msg.section_number());
+		g_pSM->LogMessage(myself, "Msg uncompressed_sample_offset %d", msg.uncompressed_sample_offset());
+		g_pSM->LogMessage(myself, "STATIC CALL SV_BroadcastVoiceData_CSGO");
+		g_pSM->LogMessage(myself, "=============SV_BroadcastVoiceData_CSGO================");
 	}
 
-	if (g_Interface.OnBroadcastVoiceData(pClient, msg.data().size(), (char *)msg.data().c_str()))
+	if (g_Interface.OnBroadcastVoiceData(pClient, msg.sequence_bytes(), (char *)msg.data().c_str()))
+	{
 		return DETOUR_STATIC_CALL(SV_BroadcastVoiceData_CSGO)(pClient, msg, paramrelatedtohltv);
+	}
 
 	// Return CSVCMsg_VoiceData::~CSVCMsg_VoiceData((CSVCMsg_VoiceData *)v48); but return value not used in
 	// bool CGameClient::CLCMsg_VoiceData( const CCLCMsg_VoiceData& msg ) so wtf ???
@@ -765,14 +779,34 @@ void CVoice::BroadcastVoiceData(IClient *pClient, int nBytes, unsigned char *pDa
 
 		DETOUR_STATIC_CALL(SV_BroadcastVoiceData_LTCG)((char *)pData, 0);
 	#else
-		char paramrelatedtohltv = 1; // IDK what this does
+		char paramrelatedtohltv = 0; // IDK what this does
+		static uint32_t section_number = 0;
 		CCLCMsg_VoiceData msg;
-		msg.set_xuid(0);
+		msg.set_xuid(0); // steamID64 set to 0 because hltv is a BOT
 		msg.set_data((char *)pData);
 		msg.set_format(VOICEDATA_FORMAT_ENGINE);
 		msg.set_sequence_bytes(nBytes);
-		msg.set_section_number(0);
-		msg.set_uncompressed_sample_offset(0);
+		// msg.set_section_number(section_number);
+		// msg.set_uncompressed_sample_offset(0);
+
+		if (g_SvLogging->GetInt())
+		{
+			g_pSM->LogMessage(myself, "=============BroadcastVoiceData================");
+			g_pSM->LogMessage(myself, "client %d", pClient->GetPlayerSlot() + 1);
+			g_pSM->LogMessage(myself, "paramrelatedtohltv %d", paramrelatedtohltv);
+
+			if (msg.xuid())
+				g_pSM->LogMessage(myself, "Msg XUID: %" PRId64, msg.xuid());
+
+			g_pSM->LogMessage(myself, "Msg Format: %d", msg.format());
+			g_pSM->LogMessage(myself, "Msg sequence_bytes %d", msg.sequence_bytes());
+			g_pSM->LogMessage(myself, "Msg Data: %s", (char *)msg.data().c_str());
+			g_pSM->LogMessage(myself, "Msg section_number %d", msg.section_number());
+			g_pSM->LogMessage(myself, "Msg uncompressed_sample_offset %d", msg.uncompressed_sample_offset());
+			g_pSM->LogMessage(myself, "STATIC CALL SV_BroadcastVoiceData_CSGO");
+			g_pSM->LogMessage(myself, "=============BroadcastVoiceData================");
+		}
+
 		DETOUR_STATIC_CALL(SV_BroadcastVoiceData_CSGO)(pClient, msg, paramrelatedtohltv);
 	#endif
 #else

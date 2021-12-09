@@ -36,7 +36,7 @@
 #include "smsdk_ext.h"
 #include "celt_header.h"
 #include "ringbuffer.h"
-#include "netmessages.pb.h"
+#include "pb/csgo/netmessages.pb.h"
 
 /**
  * @file extension.h
@@ -53,22 +53,6 @@ typedef long long	int64;
 
 class CDetour;
 class IClient;
-
-// enum VoiceDataFormat_t
-// {
-// 	VOICEDATA_FORMAT_STEAM = 0, // steam uses SILK
-// 	VOICEDATA_FORMAT_ENGINE = 1 // was speex, switching to celt
-// };
-
-// struct CCLCMsg_VoiceData
-// {
-// 	char *data;
-// 	uint64_t xuid;
-// 	VoiceDataFormat_t format = VOICEDATA_FORMAT_ENGINE;
-// 	int32_t sequence_bytes; // This is a TCP-style sequence number, so it includes the current packet length.  So it's actually the offset within the compressed data stream of the next packet to follow (if any).
-// 	uint32_t section_number;
-// 	uint32_t uncompressed_sample_offset;
-// };
 
 /**
  * @brief Sample implementation of the SDK Extension.

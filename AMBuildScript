@@ -404,7 +404,7 @@ class ExtensionConfig(object):
           '-current_version', self.productVersion
         ]
     return binary
-    
+
   def LibraryBuilder(self, compiler, name):
     binary = compiler.Library(name)
     self.AddVersioning(binary)
@@ -453,7 +453,6 @@ class ExtensionConfig(object):
       os.path.join(self.sm_root, 'public', 'amtl', 'amtl'),
       os.path.join(self.sm_root, 'public', 'amtl'),
       os.path.join(self.sm_root, 'extensions', 'sm-ext-common', 'include'),
-      os.path.join(context.currentSourcePath, 'protobuf_compiled', 'include'),
     ]
     return compiler
 
@@ -526,7 +525,7 @@ class ExtensionConfig(object):
     if compiler.target.platform == 'linux':
       if sdk.name in ['csgo', 'blade']:
         compiler.linkflags.remove('-static-libstdc++')
-        compiler.defines += ['_GLIBCXX_USE_CXX11_ABI=0']
+        compiler.defines += ['_GLIBCXX_USE_CXX11_ABI=1']
 
     for path in paths:
       compiler.cxxincludes += [os.path.join(sdk.path, *path)]
@@ -601,6 +600,11 @@ class ExtensionConfig(object):
       compiler.weaklinkdeps += [output]
       compiler.linkflags[0:0] = [library]
 
+    return binary
+
+  def ProtoBufLibrary(self, context, compiler, name, sdk):
+    binary = self.Library(context, compiler, name)
+    self.ConfigureForExtension(context, binary.compiler)
     return binary
 
   def HL2Library(self, context, compiler, name, sdk):
