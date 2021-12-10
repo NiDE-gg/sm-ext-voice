@@ -180,7 +180,7 @@ private:
 	void HandleNetwork();
 	void OnDataReceived(CClient *pClient, int16_t *pData, size_t Samples);
 	void HandleVoiceData();
-	void BroadcastVoiceData(IClient *pClient, int nBytes, unsigned char *pData);
+	void BroadcastVoiceData(IClient *pClient, size_t nBytes, unsigned char *pData);
 };
 
 #endif // _INCLUDE_SOURCEMOD_EXTENSION_PROPER_H_

@@ -29,6 +29,7 @@
  * Version: $Id$
  */
 //#define _GNU_SOURCE
+#include <stdexcept>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
@@ -62,9 +63,16 @@
 // Newer games sensible limit of 8 packets per frame = 552 bytes -> 82.80ms of voice data per frame
 #define NET_MAX_VOICE_BYTES_FRAME (8 * (5 + 64))
 
-ConVar *g_SmVoiceAddr = CreateConVar("sm_voice_addr", "127.0.0.1", FCVAR_PROTECTED, "Voice server listen ip address.");
-ConVar *g_SmVoicePort = CreateConVar("sm_voice_port", "27020", FCVAR_PROTECTED, "Voice server listen port.", true, 1025.0, true, 65535.0);
 ConVar *g_SvLogging = CreateConVar("sm_voice_logging", "0", FCVAR_NOTIFY, "Log client connections");
+ConVar *g_SmVoiceAddr = CreateConVar("sm_voice_addr", "127.0.0.1", FCVAR_PROTECTED, "Voice server listen ip address [0.0.0.0 for docker]");
+ConVar *g_SmVoicePort = CreateConVar("sm_voice_port", "27020", FCVAR_PROTECTED, "Voice server listen port [1025 - 65535]", true, 1025.0, true, 65535.0);
+ConVar *g_SvSampleRateHz = CreateConVar("sm_voice_sample_rate_hz", "22050", FCVAR_NOTIFY, "Sample rate in Hertz [11050 - 48000]", true, 11050.0, true, 48000.0);
+ConVar *g_SvBitRateKbps = CreateConVar("sm_voice_bit_rate_kbps", "64", FCVAR_NOTIFY, "Bit rate in kbps for one channel [24 - 128]", true, 24.0, true, 128.0);
+ConVar *g_SvFrameSize = CreateConVar("sm_voice_frame_size", "512", FCVAR_NOTIFY, "Frame size per packet");
+ConVar *g_SvPacketSize = CreateConVar("sm_voice_packet_size", "64", FCVAR_NOTIFY, "Packet size for voice data");
+ConVar *g_SvComplexity = CreateConVar("sm_voice_complexity", "10", FCVAR_NOTIFY, "Encoder complexity [0 - 10]", true, 0.0, true, 10.0);
+ConVar *g_SvCallOriginalBroadcast = CreateConVar("sm_voice_call_original_broadcast", "1", FCVAR_NOTIFY, "Call the original broadcast, set to 0 for debug purposes");
+ConVar *g_SvTestDataHex = CreateConVar("sm_voice_debug_celt_data", "", FCVAR_NOTIFY, "Debug only, celt data in HEX to send instead of incoming data");
 
 /**
  * @file extension.cpp
@@ -82,9 +90,6 @@ IForward *g_pEndSpeakingForward = NULL;
 
 ITimer *g_pTimerSpeaking[MAX_CLIENTS];
 
-// CDetour *g_Detour_OnVoiceTransmit = NULL;
-// CDetour *g_Detour_CGameClient__ProcessVoiceData = NULL;
-
 CGlobalVars *gpGlobals = NULL;
 ISDKTools *g_pSDKTools = NULL;
 IServer *iserver = NULL;
@@ -97,30 +102,96 @@ double g_fLastVoiceData[SM_MAXPLAYERS + 1];
 
 IGameConfig *g_pGameConf = NULL;
 
-DETOUR_DECL_STATIC3(SV_BroadcastVoiceData_CSGO, int, IClient *, pClient, const CCLCMsg_VoiceData &, msg, bool, paramrelatedtohltv)
+std::string string_to_hex(const std::string& input)
+{
+    static const char hex_digits[] = "0123456789ABCDEF";
+
+    std::string output;
+    output.reserve(input.length() * 2);
+    for (unsigned char c : input)
+    {
+        output.push_back(hex_digits[c >> 4]);
+        output.push_back(hex_digits[c & 15]);
+    }
+    return output;
+}
+
+int hex_value(unsigned char hex_digit)
+{
+    static const signed char hex_values[256] = {
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+         0,  1,  2,  3,  4,  5,  6,  7,  8,  9, -1, -1, -1, -1, -1, -1,
+        -1, 10, 11, 12, 13, 14, 15, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, 10, 11, 12, 13, 14, 15, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    };
+    int value = hex_values[hex_digit];
+    if (value == -1) throw std::invalid_argument("invalid hex digit");
+    return value;
+}
+
+std::string hex_to_string(const std::string& input)
+{
+    const auto len = input.length();
+    if (len & 1) throw std::invalid_argument("odd length");
+
+    std::string output;
+    output.reserve(len / 2);
+    for (auto it = input.begin(); it != input.end(); )
+    {
+        int hi = hex_value(*it++);
+        int lo = hex_value(*it++);
+        output.push_back(hi << 4 | lo);
+    }
+    return output;
+}
+
+void PrintCCLCMsg_VoiceData(const char *funcName, int client, const CCLCMsg_VoiceData &msg, bool drop)
+{
+	g_pSM->LogMessage(myself, "===START=======%s=============", funcName);
+	g_pSM->LogMessage(myself, "client %d", client);
+	g_pSM->LogMessage(myself, "drop %d", drop);
+
+	if (msg.xuid())
+		g_pSM->LogMessage(myself, "Msg XUID: %" PRId64, msg.xuid());
+
+	g_pSM->LogMessage(myself, "Msg Format: %d", msg.format());
+	g_pSM->LogMessage(myself, "Msg sequence_bytes %d", msg.sequence_bytes());
+	if (msg.has_data())
+	{
+		g_pSM->LogMessage(myself, "Msg Data Size: %d", msg.data().size());
+		g_pSM->LogMessage(myself, "Msg Data Size: %zu", msg.data().size());
+		g_pSM->LogMessage(myself, "Msg Data Length: %d", msg.data().length());
+		g_pSM->LogMessage(myself, "Msg Data Length: %zu", msg.data().length());
+		g_pSM->LogMessage(myself, "Msg Data: %s", msg.data().c_str());
+
+		std::string hex_value = string_to_hex(msg.data().c_str());
+		g_pSM->LogMessage(myself, "Msg Data: %s", hex_value.c_str());
+	}
+	g_pSM->LogMessage(myself, "Msg section_number %d", msg.section_number());
+	g_pSM->LogMessage(myself, "Msg uncompressed_sample_offset %d", msg.uncompressed_sample_offset());
+	g_pSM->LogMessage(myself, "Msg uncompressed_sample_offset PRId32 %" PRId32, msg.uncompressed_sample_offset());
+	g_pSM->LogMessage(myself, "===END=======%s================", funcName);
+}
+
+DETOUR_DECL_STATIC3(SV_BroadcastVoiceData_CSGO, int, IClient *, pClient, const CCLCMsg_VoiceData &, msg, bool, drop)
 {
 	if (g_SvLogging->GetInt())
-	{
-		g_pSM->LogMessage(myself, "=============SV_BroadcastVoiceData_CSGO================");
-		g_pSM->LogMessage(myself, "client %d", pClient->GetPlayerSlot() + 1);
-		g_pSM->LogMessage(myself, "paramrelatedtohltv %d", paramrelatedtohltv);
+		PrintCCLCMsg_VoiceData("SV_BroadcastVoiceData_CSGO", pClient->GetPlayerSlot() + 1, msg, drop);
 
-		if (msg.xuid())
-			g_pSM->LogMessage(myself, "Msg XUID: %" PRId64, msg.xuid());
-
-		g_pSM->LogMessage(myself, "Msg Format: %d", msg.format());
-		g_pSM->LogMessage(myself, "Msg sequence_bytes %d", msg.sequence_bytes());
-		g_pSM->LogMessage(myself, "Msg Data: %s", (char *)msg.data().c_str());
-		g_pSM->LogMessage(myself, "Msg section_number %d", msg.section_number());
-		g_pSM->LogMessage(myself, "Msg uncompressed_sample_offset %d", msg.uncompressed_sample_offset());
-		g_pSM->LogMessage(myself, "STATIC CALL SV_BroadcastVoiceData_CSGO");
-		g_pSM->LogMessage(myself, "=============SV_BroadcastVoiceData_CSGO================");
-	}
-
-	if (g_Interface.OnBroadcastVoiceData(pClient, msg.sequence_bytes(), (char *)msg.data().c_str()))
-	{
-		return DETOUR_STATIC_CALL(SV_BroadcastVoiceData_CSGO)(pClient, msg, paramrelatedtohltv);
-	}
+	if (g_Interface.OnBroadcastVoiceData(pClient, msg.data().size(), (char*)msg.data().c_str()))
+		return DETOUR_STATIC_CALL(SV_BroadcastVoiceData_CSGO)(pClient, msg, drop);
 
 	// Return CSVCMsg_VoiceData::~CSVCMsg_VoiceData((CSVCMsg_VoiceData *)v48); but return value not used in
 	// bool CGameClient::CLCMsg_VoiceData( const CCLCMsg_VoiceData& msg ) so wtf ???
@@ -250,16 +321,24 @@ bool CVoice::SDK_OnLoad(char *error, size_t maxlength, bool late)
 	g_pStartSpeakingForward = g_pForwards->CreateForward("OnClientSpeakingStart", ET_Event, 1, NULL, Param_Cell);
 	g_pEndSpeakingForward = g_pForwards->CreateForward("OnClientSpeakingEnd", ET_Event, 1, NULL, Param_Cell);
 
+	AutoExecConfig(g_pCVar, true);
+
+	if (g_SvLogging->GetInt())
+	{
+		g_pSM->LogMessage(myself, "== Voice Encoder Settings ==");
+		g_pSM->LogMessage(myself, "SampleRateHertzKbps: %d", g_SvSampleRateHz->GetInt());
+		g_pSM->LogMessage(myself, "BitRate: %d", g_SvBitRateKbps->GetInt());
+		g_pSM->LogMessage(myself, "FrameSize: %d", g_SvFrameSize->GetInt());
+		g_pSM->LogMessage(myself, "PacketSize: %d", g_SvPacketSize->GetInt());
+		g_pSM->LogMessage(myself, "Complexity: %d", g_SvComplexity->GetInt());
+	}
+
 	// Encoder settings
-#if SOURCE_ENGINE == SE_CSGO || SOURCE_ENGINE == SE_INSURGENCY
-	m_EncoderSettings.SampleRate_Hz = 44100;
-#else
-	m_EncoderSettings.SampleRate_Hz = 22050;
-#endif
-	m_EncoderSettings.TargetBitRate_Kbps = 64;
-	m_EncoderSettings.FrameSize = 512; // samples
-	m_EncoderSettings.PacketSize = 64;
-	m_EncoderSettings.Complexity = 10; // 0 - 10
+	m_EncoderSettings.SampleRate_Hz = g_SvSampleRateHz->GetInt();
+	m_EncoderSettings.TargetBitRate_Kbps = g_SvBitRateKbps->GetInt();
+	m_EncoderSettings.FrameSize = g_SvFrameSize->GetInt(); // samples
+	m_EncoderSettings.PacketSize = g_SvPacketSize->GetInt();
+	m_EncoderSettings.Complexity = g_SvComplexity->GetInt(); // 0 - 10
 	m_EncoderSettings.FrameTime = (double)m_EncoderSettings.FrameSize / (double)m_EncoderSettings.SampleRate_Hz;
 
 	// Init CELT encoder
@@ -283,8 +362,6 @@ bool CVoice::SDK_OnLoad(char *error, size_t maxlength, bool late)
 	celt_encoder_ctl(m_pCodec, CELT_RESET_STATE_REQUEST, NULL);
 	celt_encoder_ctl(m_pCodec, CELT_SET_BITRATE(m_EncoderSettings.TargetBitRate_Kbps * 1000));
 	celt_encoder_ctl(m_pCodec, CELT_SET_COMPLEXITY(m_EncoderSettings.Complexity));
-
-	AutoExecConfig(g_pCVar, true);
 
 	return true;
 }
@@ -470,8 +547,10 @@ bool CVoice::OnBroadcastVoiceData(IClient *pClient, int nBytes, char *data)
 	// 5 = SVC_VoiceData header/overhead
 	g_aFrameVoiceBytes[client] += 5 + nBytes;
 
-	if(g_aFrameVoiceBytes[client] > NET_MAX_VOICE_BYTES_FRAME)
+#if SOURCE_ENGINE != SE_CSGO && SOURCE_ENGINE == SE_INSURGENCY
+	if (g_aFrameVoiceBytes[client] > NET_MAX_VOICE_BYTES_FRAME)
 		return false;
+#endif
 
 	g_fLastVoiceData[client] = gpGlobals->curtime;
 
@@ -734,7 +813,7 @@ void CVoice::HandleVoiceData()
 
 		// Encode it!
 		unsigned char aFinal[PacketSize];
-		size_t FinalSize = 0;
+		int FinalSize = 0;
 
 		FinalSize = celt_encode(m_pCodec, aBuffer, SamplesPerFrame, aFinal, sizeof(aFinal));
 
@@ -770,8 +849,11 @@ void CVoice::HandleVoiceData()
 	m_AvailableTime += (double)FramesAvailable * m_EncoderSettings.FrameTime;
 }
 
-void CVoice::BroadcastVoiceData(IClient *pClient, int nBytes, unsigned char *pData)
+void CVoice::BroadcastVoiceData(IClient *pClient, size_t nBytes, unsigned char *pData)
 {
+	if (!g_Interface.OnBroadcastVoiceData(pClient, nBytes, (char*)pData))
+		return;
+
 #if SOURCE_ENGINE == SE_CSGO || SOURCE_ENGINE == SE_INSURGENCY
 	#ifdef _WIN32
 		__asm mov ecx, pClient;
@@ -779,35 +861,49 @@ void CVoice::BroadcastVoiceData(IClient *pClient, int nBytes, unsigned char *pDa
 
 		DETOUR_STATIC_CALL(SV_BroadcastVoiceData_LTCG)((char *)pData, 0);
 	#else
-		char paramrelatedtohltv = 0; // IDK what this does
-		static uint32_t section_number = 0;
-		CCLCMsg_VoiceData msg;
-		msg.set_xuid(0); // steamID64 set to 0 because hltv is a BOT
-		msg.set_data((char *)pData);
-		msg.set_format(VOICEDATA_FORMAT_ENGINE);
-		msg.set_sequence_bytes(nBytes);
-		// msg.set_section_number(section_number);
-		// msg.set_uncompressed_sample_offset(0);
+		bool drop = false; // if (!pDestClient->IsSplitScreenUser() && (!drop || !IsReplay/IsHLTV())
+		static ::google::protobuf::int32 sequence_bytes = 0;
+		static ::google::protobuf::uint32 section_number = 0;
+		static ::google::protobuf::uint32 uncompressed_sample_offset = 0;
 
-		if (g_SvLogging->GetInt())
+		int client = pClient->GetPlayerSlot() + 1;
+
+		if (g_pTimerSpeaking[client] == NULL)
 		{
-			g_pSM->LogMessage(myself, "=============BroadcastVoiceData================");
-			g_pSM->LogMessage(myself, "client %d", pClient->GetPlayerSlot() + 1);
-			g_pSM->LogMessage(myself, "paramrelatedtohltv %d", paramrelatedtohltv);
-
-			if (msg.xuid())
-				g_pSM->LogMessage(myself, "Msg XUID: %" PRId64, msg.xuid());
-
-			g_pSM->LogMessage(myself, "Msg Format: %d", msg.format());
-			g_pSM->LogMessage(myself, "Msg sequence_bytes %d", msg.sequence_bytes());
-			g_pSM->LogMessage(myself, "Msg Data: %s", (char *)msg.data().c_str());
-			g_pSM->LogMessage(myself, "Msg section_number %d", msg.section_number());
-			g_pSM->LogMessage(myself, "Msg uncompressed_sample_offset %d", msg.uncompressed_sample_offset());
-			g_pSM->LogMessage(myself, "STATIC CALL SV_BroadcastVoiceData_CSGO");
-			g_pSM->LogMessage(myself, "=============BroadcastVoiceData================");
+			section_number++;
+			sequence_bytes = 0;
+			uncompressed_sample_offset = 0;
 		}
 
-		DETOUR_STATIC_CALL(SV_BroadcastVoiceData_CSGO)(pClient, msg, paramrelatedtohltv);
+		CCLCMsg_VoiceData msg;
+		msg.set_xuid(0); // steamID64 set to 0 because hltv is a BOT
+
+		if (strcmp(g_SvTestDataHex->GetString(), "") == 0)
+		{
+			sequence_bytes += nBytes;
+			msg.set_data((char*)pData, nBytes);
+		}
+		else
+		{
+			::std::string testing = hex_to_string(g_SvTestDataHex->GetString());
+			sequence_bytes += nBytes;
+			msg.set_data(testing.c_str(), testing.size());
+		}
+
+		uncompressed_sample_offset += m_EncoderSettings.FrameSize;
+
+		msg.set_format(VOICEDATA_FORMAT_ENGINE);
+		msg.set_sequence_bytes(sequence_bytes);
+
+		// These two values set to 0 will make it them ignored
+		msg.set_section_number(0);
+		msg.set_uncompressed_sample_offset(0);
+
+		if (g_SvLogging->GetInt())
+			PrintCCLCMsg_VoiceData("BroadcastVoiceData", client, msg, drop);
+
+		if (g_SvCallOriginalBroadcast->GetInt())
+			DETOUR_STATIC_CALL(SV_BroadcastVoiceData_CSGO)(pClient, msg, drop);
 	#endif
 #else
 	#ifdef _WIN32

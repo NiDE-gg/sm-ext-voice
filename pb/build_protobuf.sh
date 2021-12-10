@@ -11,18 +11,18 @@ git clone https://github.com/protocolbuffers/protobuf.git -b $PROTOBUF_VERSION -
 cd protobuf-master
 
 #sh autogen.sh
+
 # Fix because autogen in protobuf 2.5.0 doesnt work anymore
 autoreconf -f -i -Wall,no-obsolete
-
 rm -rf autom4te.cache config.h.in~
 
-./configure --prefix=/home/alliedmodders/sourcemod/extensions/sm-ext-voice/pb --build=i686-pc-linux-gnu "CFLAGS=-m32" "CXXFLAGS=-m32" "LDFLAGS=-m32" --disable-shared --enable-static
+# Make sure to compile for 32bit with old ABI for std::string compatibility
+./configure --prefix=/home/alliedmodders/sourcemod/extensions/sm-ext-voice/pb --build=i686-pc-linux-gnu "CFLAGS=-m32 -D_GLIBCXX_USE_CXX11_ABI=0 -std=c++14" "CXXFLAGS=-m32 -D_GLIBCXX_USE_CXX11_ABI=0 -std=c++14" "LDFLAGS=-m32 -D_GLIBCXX_USE_CXX11_ABI=0 -std=c++14" --disable-shared --enable-static
 make -j 8
 make install
 
-cd ..
-
 # Compile .proto files to c++
 
-./bin/protoc google/protobuf/descriptor.proto --cpp_out=google/protobuf
-./bin/protoc csgo/netmessages.proto --cpp_out=csgo
+cd ../csgo
+../bin/protoc google/protobuf/descriptor.proto --cpp_out=./
+../bin/protoc netmessages.proto --cpp_out=./
